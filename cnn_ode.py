@@ -2,7 +2,7 @@ from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional
 from jax import lax, random, vmap, numpy as jnp
-from ode import odeint
+from jax.experimental.ode import odeint
 import flax
 from flax.training import train_state
 from flax.core import freeze, unfreeze
@@ -11,6 +11,7 @@ from flax import serialization
 import optax
 import tensorflow_datasets as tfds
 import numpy as np
+from tqdm import tqdm
 
 
 # Define model
@@ -88,24 +89,22 @@ class ODEfunc(nn.Module):
         return out
 
 
-class ODEBlock(nn.Module):
+class ODEBlock():
     """ODE block which contains odeint"""
-    odefunc: Callable = ODEfunc(64)
-    integration_time: Any = jnp.array([0., 1.])
+    def __init__(self, odefunc):
+        self.odefunc = odefunc
+        self.integration_time = jnp.array([0., 1.])
 
-    @nn.compact
-    def __call__(self, inputs):
-        x = inputs
-        # TODO odeint is not designed for Flax.nn.Module.apply.
-        init_state, final_state = odeint(self.odefunc.apply,
-                                         x, self.integration_time, {'param': self.variables})
+    def __call__(self, x, params):
+        ode_func_partial = partial(self.odefunc.apply, {'params': params})
+        init_state, final_state = odeint(ode_func_partial, x, self.integration_time)
         return final_state
 
 
 class SmallResNet(nn.Module):
     res_down1: Callable = ResDownBlock()
     res_down2: Callable = ResDownBlock()
-    resblock1: Callable = ODEBlock()
+    ode_func: Callable = ODEfunc(64)
 
     @nn.compact
     def __call__(self, inputs):
@@ -113,8 +112,8 @@ class SmallResNet(nn.Module):
         x = nn.Conv(features=64, kernel_size=(3, 3))(x)
         x = self.res_down1(x)
         x = self.res_down2(x)
-
-        x = self.resblock1(x)
+        _ = self.ode_func(x, 0)
+        x = ODEBlock(self.ode_func)(x, self.ode_func.variables['params'])
 
         x = nn.GroupNorm(64)(x)
         x = nn.relu(x)
@@ -159,7 +158,6 @@ def get_datasets():
 def create_train_state(rng, learning_rate):
     """Creates initial 'TrainState'."""
     cnn = SmallResNet()
-    # TODO Error during initialization
     params = cnn.init(rng, jnp.ones([1, 28, 28, 1]))['params']
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
@@ -172,7 +170,7 @@ def create_train_state(rng, learning_rate):
 def train_step(state, batch):
     """Train for a single step."""
     def loss_fn(params):
-        logits = SmallResNet().apply({'params': params}, batch['image'])
+        logits = vmap(SmallResNet()).apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
         return loss, logits
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -180,6 +178,23 @@ def train_step(state, batch):
     state = state.apply_gradients(grads=grads)
     metrics = compute_metrics(logits=logits, labels=batch['label'])
     return state, metrics
+
+
+# TODO Use vmap for speed up
+# Training step w/ vmap
+@jax.jit
+def train_vmap_step(apply_fun, x_batch, y_batch, optimizer, state):
+    def bathed_loss(params):
+        def loss_fn(x, y):
+            pred, updated_state = apply_fun({'params': params, **state},
+                                            x, mutable= list(state.keys())
+                                            )
+            return cross_entropy_loss(pred, y)
+
+        loss, updated_state = jax.vmap(
+            loss_fn, out_axes=(0, None),
+            axis_name='batch')(x_batch, y_batch)
+
 
 
 # Evaluation step
@@ -199,7 +214,7 @@ def train_epoch(state, train_ds, batch_size, epoch, rng):
     perms = perms[:steps_per_epoch * batch_size]    # skip incomplete batch
     perms = perms.reshape((steps_per_epoch, batch_size))
     batch_metrics = []
-    for perm in perms:
+    for perm in tqdm(perms):
         batch = {k: v[perm, ...] for k, v in train_ds.items()}
         state, metrics = train_step(state, batch)
         batch_metrics.append(metrics)
@@ -236,9 +251,9 @@ if __name__ == '__main__':
     del init_rng  # Must not be used anymore.
 
     num_epochs = 10
-    batch_size = 32
+    batch_size = 64
 
-    for epoch in range(1, num_epochs + 1):
+    for epoch in tqdm(range(1, num_epochs + 1)):
         rng, input_rng = jax.random.split(rng)
         state = train_epoch(state, train_ds, batch_size, epoch, input_rng)
         test_loss, test_accuracy = eval_model(state.params, test_ds)
