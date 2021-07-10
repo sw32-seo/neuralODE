@@ -1,7 +1,8 @@
+from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional
 from jax import lax, random, vmap, numpy as jnp
-from jax.experimental.ode import odeint
+from ode import odeint
 import flax
 from flax.training import train_state
 from flax.core import freeze, unfreeze
@@ -36,19 +37,6 @@ class CNN(nn.Module):
 
 
 # Define Residual Block
-class ResBlock(nn.Module):
-    """Single Resblock w/o downsample"""
-
-    @nn.compact
-    def __call__(self, inputs):
-        x = inputs
-        f_x = nn.relu(nn.GroupNorm(64)(x))
-        f_x = nn.Conv(features=64, kernel_size=(3, 3))(f_x)
-        f_x = nn.relu(nn.GroupNorm(64)(f_x))
-        f_x = nn.Conv(features=64, kernel_size=(3, 3))(f_x)
-        x = f_x + x
-        return x
-
 class ResDownBlock(nn.Module):
     """Single ResBlock w/ downsample"""
 
@@ -64,16 +52,60 @@ class ResDownBlock(nn.Module):
         return x
 
 
+class ConcatConv2D(nn.Module):
+    """Concat dynamics to hidden layer"""
+    dim_out: Any = 64
+    ksize: Any = 3
+    strides: Any = 1
+
+    @nn.compact
+    def __call__(self, x, t):
+        tt = jnp.ones_like(x[:, :, :, :1]) * t
+        ttx = jnp.concatenate([tt, x], -1)
+        return nn.Conv(features=self.dim_out, kernel_size=self.ksize, strides=self.strides)(ttx)
+
+
 # Define Model for Mnist example in Neural ODE
+class ODEfunc(nn.Module):
+    """ODE function which replace ResNet"""
+    dim: Any = 64
+
+    @nn.compact
+    def __call__(self, inputs, t):
+        x = inputs
+        out = nn.GroupNorm(self.dim)(x)
+        out = nn.relu(out)
+        tt = jnp.ones_like(out[:, :, :, :1]) * t
+        ttx = jnp.concatenate([tt, out], -1)
+        out = nn.Conv(features=self.dim, kernel_size=(3, 3))(ttx)
+        out = nn.GroupNorm(self.dim)(out)
+        out = nn.relu(out)
+        tt = jnp.ones_like(out[:, :, :, :1]) * t
+        ttx = jnp.concatenate([tt, out], -1)
+        out = nn.Conv(features=self.dim, kernel_size=(3, 3))(ttx)
+        out = nn.GroupNorm(self.dim)(out)
+
+        return out
+
+
+class ODEBlock(nn.Module):
+    """ODE block which contains odeint"""
+    odefunc: Callable = ODEfunc(64)
+    integration_time: Any = jnp.array([0., 1.])
+
+    @nn.compact
+    def __call__(self, inputs):
+        x = inputs
+        # TODO odeint is not designed for Flax.nn.Module.apply.
+        init_state, final_state = odeint(self.odefunc.apply,
+                                         x, self.integration_time, {'param': self.variables})
+        return final_state
+
+
 class SmallResNet(nn.Module):
     res_down1: Callable = ResDownBlock()
     res_down2: Callable = ResDownBlock()
-    resblock1: Callable = ResBlock()
-    resblock2: Callable = ResBlock()
-    resblock3: Callable = ResBlock()
-    resblock4: Callable = ResBlock()
-    resblock5: Callable = ResBlock()
-    resblock6: Callable = ResBlock()
+    resblock1: Callable = ODEBlock()
 
     @nn.compact
     def __call__(self, inputs):
@@ -83,11 +115,6 @@ class SmallResNet(nn.Module):
         x = self.res_down2(x)
 
         x = self.resblock1(x)
-        x = self.resblock2(x)
-        x = self.resblock3(x)
-        x = self.resblock4(x)
-        x = self.resblock5(x)
-        x = self.resblock6(x)
 
         x = nn.GroupNorm(64)(x)
         x = nn.relu(x)
@@ -132,6 +159,7 @@ def get_datasets():
 def create_train_state(rng, learning_rate):
     """Creates initial 'TrainState'."""
     cnn = SmallResNet()
+    # TODO Error during initialization
     params = cnn.init(rng, jnp.ones([1, 28, 28, 1]))['params']
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
@@ -207,8 +235,8 @@ if __name__ == '__main__':
     state = create_train_state(init_rng, learning_rate)
     del init_rng  # Must not be used anymore.
 
-    num_epochs = 40
-    batch_size = 128
+    num_epochs = 10
+    batch_size = 32
 
     for epoch in range(1, num_epochs + 1):
         rng, input_rng = jax.random.split(rng)
