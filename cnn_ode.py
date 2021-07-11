@@ -98,6 +98,16 @@ class ODEBlock(nn.Module):
         return final_state
 
 
+class ODEBlockVmap(nn.Module):
+    @nn.compact
+    def __call__(self, x, params):
+        vmap_odeblock = nn.vmap(ODEBlock,
+                                variable_axes={'params': 0},
+                                split_rngs={'params': True},
+                                in_axes=(0, None))
+        return vmap_odeblock(name='odeblock')(x, params)
+
+
 def odeblock(ode_func, x, ode_func_params):
     init_state, final_state = odeint(partial(ode_func.apply, {'params': ode_func_params}), x, jnp.array([0., 1.]))
     return final_state
@@ -113,7 +123,7 @@ class SmallResNet(nn.Module):
         ode_func = ODEfunc(64)
         init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
         ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
-        x = vmap(ODEBlock(), in_axes=(0, None))(x, ode_func_params)
+        x = ODEBlockVmap()(x, ode_func_params)
 
         x = nn.GroupNorm(64)(x)
         x = nn.relu(x)
@@ -128,13 +138,15 @@ class SmallResNet(nn.Module):
 
 
 # Define loss
+@jax.jit
 def cross_entropy_loss(logits, labels):
     one_hot_labels = jax.nn.one_hot(labels, num_classes=10)
     return -jnp.mean(jnp.sum(one_hot_labels * logits, axis=-1))
 
 
 # Metric computation
-def compute_metrics(*, logits, labels):
+@jax.jit
+def compute_metrics(logits, labels):
     loss = cross_entropy_loss(logits=logits, labels=labels)
     accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
     metrics = {
