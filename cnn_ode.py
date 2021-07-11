@@ -76,12 +76,12 @@ class ODEfunc(nn.Module):
         x = inputs
         out = nn.GroupNorm(self.dim)(x)
         out = nn.relu(out)
-        tt = jnp.ones_like(out[:, :, :, :1]) * t
+        tt = jnp.ones_like(out[..., :1]) * t
         ttx = jnp.concatenate([tt, out], -1)
         out = nn.Conv(features=self.dim, kernel_size=(3, 3))(ttx)
         out = nn.GroupNorm(self.dim)(out)
         out = nn.relu(out)
-        tt = jnp.ones_like(out[:, :, :, :1]) * t
+        tt = jnp.ones_like(out[..., :1]) * t
         ttx = jnp.concatenate([tt, out], -1)
         out = nn.Conv(features=self.dim, kernel_size=(3, 3))(ttx)
         out = nn.GroupNorm(self.dim)(out)
@@ -89,31 +89,31 @@ class ODEfunc(nn.Module):
         return out
 
 
-class ODEBlock():
+class ODEBlock(nn.Module):
     """ODE block which contains odeint"""
-    def __init__(self, odefunc):
-        self.odefunc = odefunc
-        self.integration_time = jnp.array([0., 1.])
-
+    @nn.compact
     def __call__(self, x, params):
-        ode_func_partial = partial(self.odefunc.apply, {'params': params})
-        init_state, final_state = odeint(ode_func_partial, x, self.integration_time)
+        ode_func = ODEfunc(64, parent=None)
+        init_state, final_state = odeint(partial(ode_func.apply, {'params': params}), x, jnp.array([0., 1.]))
         return final_state
 
 
-class SmallResNet(nn.Module):
-    res_down1: Callable = ResDownBlock()
-    res_down2: Callable = ResDownBlock()
-    ode_func: Callable = ODEfunc(64)
+def odeblock(ode_func, x, ode_func_params):
+    init_state, final_state = odeint(partial(ode_func.apply, {'params': ode_func_params}), x, jnp.array([0., 1.]))
+    return final_state
 
+
+class SmallResNet(nn.Module):
     @nn.compact
     def __call__(self, inputs):
         x = inputs
         x = nn.Conv(features=64, kernel_size=(3, 3))(x)
-        x = self.res_down1(x)
-        x = self.res_down2(x)
-        _ = self.ode_func(x, 0)
-        x = ODEBlock(self.ode_func)(x, self.ode_func.variables['params'])
+        x = ResDownBlock()(x)
+        x = ResDownBlock()(x)
+        ode_func = ODEfunc(64)
+        init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
+        ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
+        x = vmap(ODEBlock(), in_axes=(0, None))(x, ode_func_params)
 
         x = nn.GroupNorm(64)(x)
         x = nn.relu(x)
@@ -128,7 +128,7 @@ class SmallResNet(nn.Module):
 
 
 # Define loss
-def cross_entropy_loss(*, logits, labels):
+def cross_entropy_loss(logits, labels):
     one_hot_labels = jax.nn.one_hot(labels, num_classes=10)
     return -jnp.mean(jnp.sum(one_hot_labels * logits, axis=-1))
 
@@ -170,7 +170,7 @@ def create_train_state(rng, learning_rate):
 def train_step(state, batch):
     """Train for a single step."""
     def loss_fn(params):
-        logits = vmap(SmallResNet()).apply({'params': params}, batch['image'])
+        logits = SmallResNet().apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
         return loss, logits
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -178,23 +178,6 @@ def train_step(state, batch):
     state = state.apply_gradients(grads=grads)
     metrics = compute_metrics(logits=logits, labels=batch['label'])
     return state, metrics
-
-
-# TODO Use vmap for speed up
-# Training step w/ vmap
-@jax.jit
-def train_vmap_step(apply_fun, x_batch, y_batch, optimizer, state):
-    def bathed_loss(params):
-        def loss_fn(x, y):
-            pred, updated_state = apply_fun({'params': params, **state},
-                                            x, mutable= list(state.keys())
-                                            )
-            return cross_entropy_loss(pred, y)
-
-        loss, updated_state = jax.vmap(
-            loss_fn, out_axes=(0, None),
-            axis_name='batch')(x_batch, y_batch)
-
 
 
 # Evaluation step
@@ -250,8 +233,8 @@ if __name__ == '__main__':
     state = create_train_state(init_rng, learning_rate)
     del init_rng  # Must not be used anymore.
 
-    num_epochs = 10
-    batch_size = 64
+    num_epochs = 1
+    batch_size = 128
 
     for epoch in tqdm(range(1, num_epochs + 1)):
         rng, input_rng = jax.random.split(rng)
