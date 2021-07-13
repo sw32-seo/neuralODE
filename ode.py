@@ -78,6 +78,7 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
   h0 = jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1)
 
   y1 = y0 + h0 * f0
+
   f1 = fun(y1, t0 + h0)
   d2 = jnp.linalg.norm((f1 - f0) / scale) / h0
 
@@ -139,7 +140,7 @@ def optimal_step_size(last_step, mean_error_ratio, safety=0.9, ifactor=10.0,
                       jnp.minimum(err_ratio**(1.0 / order) / safety, 1.0 / dfactor))
   return jnp.where(mean_error_ratio == 0, last_step * ifactor, last_step / factor)
 
-def odeint(func, y0, t, variables, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf):
+def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf):
   """Adaptive stepsize (Dormand-Prince) Runge-Kutta odeint implementation.
   Args:
     func: function to evaluate the time derivative of the solution `y` at time
@@ -164,19 +165,19 @@ def odeint(func, y0, t, variables, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.i
              "\n{}.")
       raise TypeError(msg.format(arg))
 
-  converted, consts = custom_derivatives.closure_convert(func, y0, t[0], variables, *args)
-  return _odeint_wrapper(converted, rtol, atol, mxstep, y0, t, variables, *args, *consts)
+  converted, consts = custom_derivatives.closure_convert(func, y0, t[0], *args)
+  return _odeint_wrapper(converted, rtol, atol, mxstep, y0, t, *args, *consts)
 
 @partial(jax.jit, static_argnums=(0, 1, 2, 3))
-def _odeint_wrapper(func, rtol, atol, mxstep, y0, ts, variables, *args):
+def _odeint_wrapper(func, rtol, atol, mxstep, y0, ts, *args):
   y0, unravel = ravel_pytree(y0)
   func = ravel_first_arg(func, unravel)
-  out = _odeint(func, rtol, atol, mxstep, y0, ts, variables, *args)
+  out = _odeint(func, rtol, atol, mxstep, y0, ts, *args)
   return jax.vmap(unravel)(out)
 
 @partial(jax.custom_vjp, nondiff_argnums=(0, 1, 2, 3))
-def _odeint(func, rtol, atol, mxstep, y0, ts, variables, *args):
-  func_ = lambda y, t: func(variables, y, t, *args)
+def _odeint(func, rtol, atol, mxstep, y0, ts, *args):
+  func_ = lambda y, t: func(y, t, *args)
 
   def scan_fun(carry, target_t):
 
@@ -202,6 +203,8 @@ def _odeint(func, rtol, atol, mxstep, y0, ts, variables, *args):
     y_target = jnp.polyval(interp_coeff, relative_output_time)
     return carry, y_target
 
+  # ODEfunc with NFE counter will give auxilarly output for nfe.
+  # Below code is modified to skip that output.
   f0 = func_(y0, ts[0])
   dt = initial_step_size(func_, ts[0], y0, 4, rtol, atol, f0)
   interp_coeff = jnp.array([y0] * 5)

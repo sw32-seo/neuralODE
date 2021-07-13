@@ -1,10 +1,11 @@
 from functools import partial
 import jax
-from typing import Any, Callable, Sequence, Optional
+from typing import Any, Callable, Sequence, Optional, NewType
 from jax import lax, random, vmap, numpy as jnp
 from jax.experimental.ode import odeint
 import flax
 from flax.training import train_state
+from flax import traverse_util
 from flax.core import freeze, unfreeze
 from flax import linen as nn
 from flax import serialization
@@ -56,6 +57,10 @@ class ODEfunc(nn.Module):
 
     @nn.compact
     def __call__(self, inputs, t):
+        # TODO Count number of function estimation
+        # nfe_counter = NFEcounter()
+        # nfe_counter()
+
         x = inputs
         out = nn.GroupNorm(self.dim_out)(x)
         out = nn.relu(out)
@@ -68,23 +73,27 @@ class ODEfunc(nn.Module):
         return out
 
 
-class ODEBlock(nn.Module):
-    """ODE block which contains odeint"""
-    tol = 1e-3
+class NFEcounter(nn.Module):
 
     @nn.compact
-    def __call__(self, x, params):
-        # TODO Count number of function estimation
+    def __call__(self):
         is_initialized = self.has_variable('nfe', 'nfe')
-        nfe = self.variable('nfe', 'nfe', jnp.array, 0)
-        ode_func = ODEfunc(parent=None)
-        init_state, final_state = odeint(partial(ode_func.apply, {'params': params}), x, jnp.array([0., 1.]),
-                                         rtol=self.tol, atol=self.tol)
+        nfe = self.variable('nfe', 'nfe', jnp.array, [0])
         if is_initialized:
             nfe.value += 1
 
-        return final_state
 
+class ODEBlock(nn.Module):
+    """ODE block which contains odeint"""
+    tol = 1.
+
+    @nn.compact
+    def __call__(self, x, params):
+        ode_func = ODEfunc()
+        init_state, final_state = odeint(partial(ode_func.apply, {'params': params}),
+                                         x, jnp.array([0., 1.]),
+                                         rtol=self.tol, atol=self.tol)
+        return final_state
 
 
 class ODEBlockVmap(nn.Module):
@@ -110,6 +119,7 @@ class FullODENet(nn.Module):
         x = nn.Conv(features=self.dim_out, kernel_size=(self.ksize, self.ksize))(x)
         x = ResDownBlock()(x)
         x = ResDownBlock()(x)
+
         ode_func = ODEfunc()
         init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
         ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
@@ -160,30 +170,26 @@ def get_datasets():
 def create_train_state(rng, learning_rate):
     """Creates initial 'TrainState'."""
     cnn = FullODENet()
-    variables = cnn.init(rng, jnp.ones([1, 28, 28, 1]))     #['params']
-    nfe, params = variables.pop('params')
-    del variables
+    params = cnn.init(rng, jnp.ones([1, 28, 28, 1]))['params']
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
         apply_fn=cnn.apply, params=params, tx=tx
-    ), nfe
+    )
 
 
 # Training step
 @jax.jit
-def train_step(state, batch, nfe):
+def train_step(state, batch):
     """Train for a single step."""
-    def loss_fn(params, nfe):
-        before_logit = nfe.unfreeze()
-        logits = FullODENet().apply({'params': params, **nfe}, batch['image'])
+    def loss_fn(params):
+        logits = FullODENet().apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
-        after_logit = nfe
         return loss, logits
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (_, logits), grads = grad_fn(state.params, nfe)
+    (_, logits), grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
     metrics = compute_metrics(logits=logits, labels=batch['label'])
-    return state, metrics, nfe
+    return state, metrics
 
 
 # Evaluation step
@@ -194,7 +200,7 @@ def eval_step(params, batch):
 
 
 # Train function
-def train_epoch(state, train_ds, batch_size, epoch, rng, nfe):
+def train_epoch(state, train_ds, batch_size, epoch, rng):
     """Train for a single epoch"""
     train_ds_size = len(train_ds['image'])
     steps_per_epoch = train_ds_size // batch_size
@@ -205,7 +211,7 @@ def train_epoch(state, train_ds, batch_size, epoch, rng, nfe):
     batch_metrics = []
     for perm in tqdm(perms):
         batch = {k: v[perm, ...] for k, v in train_ds.items()}
-        state, metrics, nfe = train_step(state, batch, nfe)
+        state, metrics = train_step(state, batch)
         batch_metrics.append(metrics)
 
         # compute mean of metrics across each batch in epoch.
@@ -237,7 +243,7 @@ if __name__ == '__main__':
     # Build learning rate decay as Neural ODE paper
     learning_rate = 0.0001
 
-    state, nfe = create_train_state(init_rng, learning_rate)
+    state = create_train_state(init_rng, learning_rate)
     del init_rng  # Must not be used anymore.
 
     num_epochs = 20
@@ -245,7 +251,7 @@ if __name__ == '__main__':
 
     for epoch in tqdm(range(1, num_epochs + 1)):
         rng, input_rng = jax.random.split(rng)
-        state = train_epoch(state, train_ds, batch_size, epoch, input_rng, nfe)
+        state = train_epoch(state, train_ds, batch_size, epoch, input_rng)
         test_loss, test_accuracy = eval_model(state.params, test_ds)
         print(' test epoch: %d, loss: %.2f, accuracy: %.2f' % (
             epoch, test_loss, test_accuracy * 100
