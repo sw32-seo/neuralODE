@@ -16,11 +16,7 @@ from tqdm import tqdm
 import os
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '7'
-
-# TODO Add system argument for dim_out, ksize, tol, learning_rate, num_epoch and batch_size
-
-# Define Residual Block
+# Define residual blocks
 class ResDownBlock(nn.Module):
     """Single ResBlock w/ downsample"""
     dim_out: Any = 64
@@ -37,79 +33,24 @@ class ResDownBlock(nn.Module):
         return x
 
 
-class ConcatConv2D(nn.Module):
-    """Concat dynamics to hidden layer"""
+class ResBlock(nn.Module):
+    """Single Resblock w/o downsample"""
     dim_out: Any = 64
     ksize: Any = 3
 
     @nn.compact
-    def __call__(self, x, t):
-        tt = jnp.ones_like(x[..., :1]) * t
-        ttx = jnp.concatenate([tt, x], -1)
-        return nn.Conv(features=self.dim_out, kernel_size=self.ksize)(ttx)
-
-
-# Define Model for Mnist example in Neural ODE
-class ODEfunc(nn.Module):
-    """ODE function which replace ResNet"""
-    dim_out: Any = 64
-    ksize: Any = 3
-
-    @nn.compact
-    def __call__(self, inputs, t):
-        # TODO Count number of function estimation
-        # nfe_counter = NFEcounter()
-        # nfe_counter()
-
+    def __call__(self, inputs):
         x = inputs
-        out = nn.GroupNorm(self.dim_out)(x)
-        out = nn.relu(out)
-        out = ConcatConv2D(self.dim_out, self.ksize)(out, t)
-        out = nn.GroupNorm(self.dim_out)(out)
-        out = nn.relu(out)
-        out = ConcatConv2D(self.dim_out, self.ksize)(out, t)
-        out = nn.GroupNorm(self.dim_out)(out)
-
-        return out
+        f_x = nn.relu(nn.GroupNorm(self.dim_out)(x))
+        f_x = nn.Conv(features=self.dim_out, kernel_size=(self.ksize, self.ksize))(f_x)
+        f_x = nn.relu(nn.GroupNorm(self.dim_out)(f_x))
+        f_x = nn.Conv(features=self.dim_out, kernel_size=(self.ksize, self.ksize))(f_x)
+        x = f_x + x
+        return x
 
 
-class NFEcounter(nn.Module):
-
-    @nn.compact
-    def __call__(self):
-        is_initialized = self.has_variable('nfe', 'nfe')
-        nfe = self.variable('nfe', 'nfe', jnp.array, [0])
-        if is_initialized:
-            nfe.value += 1
-
-
-class ODEBlock(nn.Module):
-    """ODE block which contains odeint"""
-    tol = 1.
-
-    @nn.compact
-    def __call__(self, x, params):
-        ode_func = ODEfunc()
-        init_state, final_state = odeint(partial(ode_func.apply, {'params': params}),
-                                         x, jnp.array([0., 1.]),
-                                         rtol=self.tol, atol=self.tol)
-        return final_state
-
-
-class ODEBlockVmap(nn.Module):
-    """Apply vmap to ODEBlock"""
-
-    @nn.compact
-    def __call__(self, x, params):
-        vmap_odeblock = nn.vmap(ODEBlock,
-                                variable_axes={'params': 0, 'nfe': None},
-                                split_rngs={'params': True, 'nfe': False},
-                                in_axes=(0, None))
-        return vmap_odeblock(name='odeblock')(x, params)
-
-
-class FullODENet(nn.Module):
-    """Full ODE net which contains two downsampling layers, ODE block and linear classifier."""
+# Define small ResNet for Mnist example
+class SmallResNet(nn.Module):
     dim_out: Any = 64
     ksize: Any = 3
 
@@ -120,10 +61,12 @@ class FullODENet(nn.Module):
         x = ResDownBlock()(x)
         x = ResDownBlock()(x)
 
-        ode_func = ODEfunc()
-        init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
-        ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
-        x = ODEBlockVmap()(x, ode_func_params)
+        x = ResBlock()(x)
+        x = ResBlock()(x)
+        x = ResBlock()(x)
+        x = ResBlock()(x)
+        x = ResBlock()(x)
+        x = ResBlock()(x)
 
         x = nn.GroupNorm(self.dim_out)(x)
         x = nn.relu(x)
@@ -169,11 +112,11 @@ def get_datasets():
 
 def create_train_state(rng, learning_rate):
     """Creates initial 'TrainState'."""
-    cnn = FullODENet()
-    params = cnn.init(rng, jnp.ones([1, 28, 28, 1]))['params']
+    resnet = SmallResNet()
+    params = resnet.init(rng, jnp.ones([1, 28, 28, 1]))['params']
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
-        apply_fn=cnn.apply, params=params, tx=tx
+        apply_fn=resnet.apply, params=params, tx=tx
     )
 
 
@@ -182,7 +125,7 @@ def create_train_state(rng, learning_rate):
 def train_step(state, batch):
     """Train for a single step."""
     def loss_fn(params):
-        logits = FullODENet().apply({'params': params}, batch['image'])
+        logits = SmallResNet().apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
         return loss, logits
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
@@ -195,7 +138,7 @@ def train_step(state, batch):
 # Evaluation step
 @jax.jit
 def eval_step(params, batch):
-    logits = FullODENet().apply({'params': params}, batch['image'])
+    logits = SmallResNet().apply({'params': params}, batch['image'])
     return compute_metrics(logits=logits, labels=batch['label'])
 
 
@@ -235,21 +178,15 @@ def eval_model(params, test_ds):
     return summary['loss'], summary['accuracy']
 
 
-if __name__ == '__main__':
+def train_and_evaluate(learning_rate, n_epoch, batch_size):
     train_ds, test_ds = get_datasets()
     rng = jax.random.PRNGKey(0)
     rng, init_rng = jax.random.split(rng)
 
-    # Build learning rate decay as Neural ODE paper
-    learning_rate = 0.0001
-
     state = create_train_state(init_rng, learning_rate)
     del init_rng  # Must not be used anymore.
 
-    num_epochs = 20
-    batch_size = 128
-
-    for epoch in tqdm(range(1, num_epochs + 1)):
+    for epoch in tqdm(range(1, n_epoch + 1)):
         rng, input_rng = jax.random.split(rng)
         state = train_epoch(state, train_ds, batch_size, epoch, input_rng)
         test_loss, test_accuracy = eval_model(state.params, test_ds)
