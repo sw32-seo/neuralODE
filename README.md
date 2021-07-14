@@ -9,7 +9,7 @@ This is the result of project ["Reproduce Neural ODE and SDE"][projectlink] in [
 
 ## Dependency
 
-###JAX and Flax
+### JAX and Flax
 
 For JAX installation, please follow [here][jaxinstalllink].
 
