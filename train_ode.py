@@ -252,3 +252,7 @@ def train_and_evaluate(learning_rate, n_epoch, batch_size, tol):
         print(' test epoch: %d, loss: %.2f, accuracy: %.2f' % (
             epoch, test_loss, test_accuracy * 100
         ))
+
+
+if __name__ == '__main__':
+    train_and_evaluate(0.0001, 3, 128, 1.)
