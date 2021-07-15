@@ -1,3 +1,8 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import glob
+from PIL import Image
 from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional, NewType
@@ -11,8 +16,6 @@ from flax import linen as nn
 from flax import serialization
 import optax
 from sklearn.datasets import make_circles
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 class HyperNetwork(nn.Module):
@@ -118,14 +121,14 @@ def get_batch(num_samples):
 def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     """Creates initial 'TrainState'."""
     z, logp_z = get_batch(1)
-    cnf = Neg_CNF(in_out_dim, hidden_dim, width)
-    params = cnf.init(rng, jnp.array(10.), (z, logp_z))['params']
+    neg_cnf = Neg_CNF(in_out_dim, hidden_dim, width)
+    params = neg_cnf.init(rng, jnp.array(10.), (z, logp_z))['params']
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
-        apply_fn=cnf.apply, params=params, tx=tx
+        apply_fn=neg_cnf.apply, params=params, tx=tx
     )
 
-# @partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
+@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     x, logp_diff_t1 = batch
     p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
@@ -147,10 +150,11 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     grad_fn = jax.value_and_grad(loss_fn)
     loss, grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
+
     return state, loss
 
 
-def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0, t1):
+def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0, t1, visual):
     """Train the model."""
     rng = jax.random.PRNGKey(0)
     state = create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width)
@@ -160,20 +164,36 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         state, loss = train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1)
         print("iter: %d, loss: %.2f" % (itr, loss))
 
+    if visual is True:
+        viz(state.params, in_out_dim, hidden_dim, width, t0, t1)
+
 
 def viz(params, in_out_dim, hidden_dim, width, t0, t1):
-    viz_samples = 30000
+    """Adapted from PyTorch """
+    viz_samples = 512
     viz_timesteps = 41
     target_sample, _ = get_batch(viz_samples)
+
+    if not os.path.exists('results/'):
+        os.makedirs('results/')
 
     z_t0 = jnp.array(np.random.multivariate_normal(mean=np.array([0., 0.]),
                                                    cov=np.array([[0.1, 0.], [0., 0.1]]),
                                                    size=viz_samples))
-    logp_diff_t0 = jnp.zeros(viz_samples, 1, dtype=jnp.float32)
+    logp_diff_t0 = jnp.zeros((viz_samples, 1), dtype=jnp.float32)
 
-    func = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': params}, -t, states)
+    # Convert Params of Neg_CNF to CNF
+    neg_params = params
+    neg_params = unfreeze(neg_params)
+    # Get flattened-key: value list.
+    neg_flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(neg_params).items()}
+    pos_flat_params = {key[6:]: jnp.array(np.array(neg_flat_params[key])) for key in list(neg_flat_params.keys())}
+    pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
+    pos_params = freeze(pos_unflat_params)
+
+    func_pos = lambda states, t: CNF(in_out_dim, hidden_dim, width).apply({'params': pos_params}, t, states)
     z_t_samples, _ = odeint(
-        func,
+        func_pos,
         (z_t0, logp_diff_t0),
         jnp.linspace(t0, t1, viz_timesteps),
         atol=1e-5,
@@ -187,14 +207,13 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
 
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
-
+    func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, -t, states)
     z_t_density, logp_diff_t = odeint(
-        func,
+        func_neg,
         (z_t1, logp_diff_t1),
-        jnp.array(np.linspace(t1, t0, viz_timesteps)),
+        -jnp.linspace(t1, t0, viz_timesteps),
         atol=1e-5,
         rtol=1e-5,
-        method='dopri5',
     )
 
     # Create plots for each timestep
@@ -226,22 +245,23 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
 
         ax2.hist2d(*z_sample.detach().cpu().numpy().T, bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
-
+        p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
+                                                                mean=jnp.array([0., 0.]),
+                                                                cov=jnp.array([[0.1, 0.], [0., 0.1]]))
         logp = p_z0(z_density) - logp_diff.view(-1)
         ax3.tricontourf(*z_t1.detach().cpu().numpy().T,
                         np.exp(logp.detach().cpu().numpy()), 200)
 
-        plt.savefig(os.path.join(args.results_dir, f"cnf-viz-{int(t * 1000):05d}.jpg"),
+        plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
                     pad_inches=0.2, bbox_inches='tight')
         plt.close()
 
-    img, *imgs = [Image.open(f) for f in sorted(glob.glob(os.path.join(args.results_dir, f"cnf-viz-*.jpg")))]
-    img.save(fp=os.path.join(args.results_dir, "cnf-viz.gif"), format='GIF', append_images=imgs,
+    img, *imgs = [Image.open(f) for f in sorted(glob.glob(os.path.join('results/', f"cnf-viz-*.jpg")))]
+    img.save(fp=os.path.join('results/', "cnf-viz.gif"), format='GIF', append_images=imgs,
              save_all=True, duration=250, loop=0)
 
-
-print('Saved visualization animation at {}'.format(os.path.join(args.results_dir, "cnf-viz.gif")))
+    print('Saved visualization animation at {}'.format(os.path.join('results/', "cnf-viz.gif")))
 
 
 if __name__ == '__main__':
-    train(0.001, 100, 512, 2, 32, 64, 0., 10.)
+    train(0.001, 10, 512, 2, 32, 64, 0., 10., True)
