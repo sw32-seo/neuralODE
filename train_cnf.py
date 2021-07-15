@@ -245,15 +245,15 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
         ax3.get_xaxis().set_ticks([])
         ax3.get_yaxis().set_ticks([])
 
-        ax1.hist2d(*target_sample.detach().cpu().numpy().T, bins=300, density=True,
+        ax1.hist2d(*target_sample.T, bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
 
-        ax2.hist2d(*z_sample.detach().cpu().numpy().T, bins=300, density=True,
+        ax2.hist2d(*z_sample.T, bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
         p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
-        logp = p_z0(z_density) - logp_diff.view(-1)
+        logp = p_z0(z_density) - logp_diff.reshape(-1)
         ax3.tricontourf(*z_t1.T,
                         np.exp(logp), 200)
 
