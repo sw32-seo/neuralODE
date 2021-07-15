@@ -18,7 +18,7 @@ import optax
 from sklearn.datasets import make_circles
 
 
-os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
+# os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -175,7 +175,7 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
 
 def viz(params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
-    viz_samples = 1
+    viz_samples = 30000
     viz_timesteps = 41
     target_sample, _ = get_batch(viz_samples)
 
@@ -245,17 +245,18 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
         ax3.get_xaxis().set_ticks([])
         ax3.get_yaxis().set_ticks([])
 
-        ax1.hist2d(*target_sample.T, bins=300, density=True,
+        cpus = jax.devices("cpu")
+        ax1.hist2d(*jax.device_put(target_sample, device=cpus[0]).T, bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
 
-        ax2.hist2d(*z_sample.T, bins=300, density=True,
+        ax2.hist2d(*jax.device_put(z_sample, device=cpus[0]).T, bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
         p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
         logp = p_z0(z_density) - logp_diff.reshape(-1)
-        ax3.tricontourf(*z_t1.T,
-                        np.exp(logp), 200)
+        ax3.tricontourf(*jax.device_put(z_t1, device=cpus[0]).T,
+                        np.exp(jax.device_put(logp, device=cpus[0])), 200)
 
         plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
                     pad_inches=0.2, bbox_inches='tight')
