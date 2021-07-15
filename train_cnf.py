@@ -18,8 +18,9 @@ import optax
 from sklearn.datasets import make_circles
 
 
-os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
+# os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+# os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
 
 class HyperNetwork(nn.Module):
@@ -253,8 +254,8 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
         logp = p_z0(z_density) - logp_diff.view(-1)
-        ax3.tricontourf(*z_t1.detach().cpu().numpy().T,
-                        np.exp(logp.detach().cpu().numpy()), 200)
+        ax3.tricontourf(*z_t1.T,
+                        np.exp(logp), 200)
 
         plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
                     pad_inches=0.2, bbox_inches='tight')
