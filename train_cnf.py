@@ -18,6 +18,10 @@ import optax
 from sklearn.datasets import make_circles
 
 
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
+
+
 class HyperNetwork(nn.Module):
     """Hyper-network allowing f(z(t), t) to change with time.
 
