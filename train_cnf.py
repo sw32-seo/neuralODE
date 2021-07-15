@@ -133,6 +133,7 @@ def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
         apply_fn=neg_cnf.apply, params=params, tx=tx
     )
 
+
 @partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     x, logp_diff_t1 = batch
@@ -184,17 +185,15 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
 
 
 def solve_dynamics(dynamics_fn, initial_state, t):
-    @jax.jit
     def f(initial_state, t):
         return odeint(dynamics_fn, initial_state, t, atol=1e-5, rtol=1e-5)
     return f(initial_state, t)
 
 
-@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
-    viz_samples = 10000
-    viz_timesteps = 41
+    viz_samples = 5000
+    viz_timesteps = 2
     target_sample, _ = get_batch(viz_samples)
 
     if not os.path.exists('results/'):
@@ -207,13 +206,6 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
 
     func_pos = lambda states, t: CNF(in_out_dim, hidden_dim, width).apply({'params': pos_params}, t, states)
     z_t_samples, _ = solve_dynamics(func_pos, (z_t0, logp_diff_t0), jnp.linspace(t0, t1, viz_timesteps))
-    # z_t_samples, _ = odeint(
-    #     func_pos,
-    #     (z_t0, logp_diff_t0),
-    #     jnp.linspace(t0, t1, viz_timesteps),
-    #     atol=1e-5,
-    #     rtol=1e-5
-    # )
 
     # Generate evolution of density
     x = jnp.linspace(-1.5, 1.5, 100)
@@ -224,13 +216,6 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
     func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, -t, states)
     z_t_density, logp_diff_t = solve_dynamics(func_neg, (z_t1, logp_diff_t1), -jnp.linspace(t1, t0, viz_timesteps))
-    # z_t_density, logp_diff_t = odeint(
-    #     func_neg,
-    #     (z_t1, logp_diff_t1),
-    #     -jnp.linspace(t1, t0, viz_timesteps),
-    #     atol=1e-5,
-    #     rtol=1e-5,
-    # )
 
     return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1
 
@@ -260,7 +245,6 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
         ax3.get_xaxis().set_ticks([])
         ax3.get_yaxis().set_ticks([])
 
-        cpus = jax.devices("cpu")
         ax1.hist2d(*jnp.transpose(target_sample), bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
 
@@ -270,8 +254,7 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
         logp = p_z0(z_density) - logp_diff.reshape(-1)
-        z_t1_copy = z_t1
-        ax3.tricontourf(*jnp.transpose(z_t1_copy),
+        ax3.tricontourf(*jnp.transpose(z_t1),
                         jnp.exp(logp), 200)
 
         plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
@@ -286,4 +269,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 10, 512, 2, 32, 64, 0., 10., True)
+    train(0.00001, 1000, 512, 2, 8, 64, 0., 10., True)
