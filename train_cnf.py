@@ -170,7 +170,7 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
 
 def viz(params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
-    viz_samples = 512
+    viz_samples = 1
     viz_timesteps = 41
     target_sample, _ = get_batch(viz_samples)
 
