@@ -18,7 +18,7 @@ import optax
 from sklearn.datasets import make_circles
 
 
-# os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
+os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -91,7 +91,6 @@ class CNF(nn.Module):
     def __call__(self, t, states):
         z, logp_z = states
 
-        batchsize = z.shape[0]
         func_dz_dt = lambda Z: DZDT(self.in_out_dim, self.hidden_dim, self.width)(Z, t)
         dz_dt = func_dz_dt(z)
         dlogp_z_dt = -trace_df_dz(func_dz_dt, z)
@@ -170,12 +169,30 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         print("iter: %d, loss: %.2f" % (itr, loss))
 
     if visual is True:
-        viz(state.params, in_out_dim, hidden_dim, width, t0, t1)
+        # Convert Params of Neg_CNF to CNF
+        neg_params = state.params
+        neg_params = unfreeze(neg_params)
+        # Get flattened-key: value list.
+        neg_flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(neg_params).items()}
+        pos_flat_params = {key[6:]: jnp.array(np.array(neg_flat_params[key])) for key in list(neg_flat_params.keys())}
+        pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
+        pos_params = freeze(pos_unflat_params)
+        output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1)
+        z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample = output
+        create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample)
 
 
-def viz(params, in_out_dim, hidden_dim, width, t0, t1):
+def solve_dynamics(dynamics_fn, initial_state, t):
+    @partial(jax.jit, backend="cpu")
+    def f(initial_state, t):
+        return odeint(dynamics_fn, initial_state, t, atol=1e-5, rtol=1e-5)
+    return f(initial_state, t)
+
+
+@partial(jax.jit, backend="cpu", static_argnums=(2, 3, 4, 5, 6))
+def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
-    viz_samples = 30000
+    viz_samples = 10000
     viz_timesteps = 41
     target_sample, _ = get_batch(viz_samples)
 
@@ -187,23 +204,15 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
                                                    size=viz_samples))
     logp_diff_t0 = jnp.zeros((viz_samples, 1), dtype=jnp.float32)
 
-    # Convert Params of Neg_CNF to CNF
-    neg_params = params
-    neg_params = unfreeze(neg_params)
-    # Get flattened-key: value list.
-    neg_flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(neg_params).items()}
-    pos_flat_params = {key[6:]: jnp.array(np.array(neg_flat_params[key])) for key in list(neg_flat_params.keys())}
-    pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
-    pos_params = freeze(pos_unflat_params)
-
     func_pos = lambda states, t: CNF(in_out_dim, hidden_dim, width).apply({'params': pos_params}, t, states)
-    z_t_samples, _ = odeint(
-        func_pos,
-        (z_t0, logp_diff_t0),
-        jnp.linspace(t0, t1, viz_timesteps),
-        atol=1e-5,
-        rtol=1e-5
-    )
+    z_t_samples, _ = solve_dynamics(func_pos, (z_t0, logp_diff_t0), jnp.linspace(t0, t1, viz_timesteps))
+    # z_t_samples, _ = odeint(
+    #     func_pos,
+    #     (z_t0, logp_diff_t0),
+    #     jnp.linspace(t0, t1, viz_timesteps),
+    #     atol=1e-5,
+    #     rtol=1e-5
+    # )
 
     # Generate evolution of density
     x = np.linspace(-1.5, 1.5, 100)
@@ -213,14 +222,19 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
     func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, -t, states)
-    z_t_density, logp_diff_t = odeint(
-        func_neg,
-        (z_t1, logp_diff_t1),
-        -jnp.linspace(t1, t0, viz_timesteps),
-        atol=1e-5,
-        rtol=1e-5,
-    )
+    z_t_density, logp_diff_t = solve_dynamics(func_neg, (z_t1, logp_diff_t1), -jnp.linspace(t1, t0, viz_timesteps))
+    # z_t_density, logp_diff_t = odeint(
+    #     func_neg,
+    #     (z_t1, logp_diff_t1),
+    #     -jnp.linspace(t1, t0, viz_timesteps),
+    #     atol=1e-5,
+    #     rtol=1e-5,
+    # )
 
+    return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample
+
+
+def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample):
     # Create plots for each timestep
     for (t, z_sample, z_density, logp_diff) in zip(
             np.linspace(t0, t1, viz_timesteps),
@@ -246,17 +260,18 @@ def viz(params, in_out_dim, hidden_dim, width, t0, t1):
         ax3.get_yaxis().set_ticks([])
 
         cpus = jax.devices("cpu")
-        ax1.hist2d(*jax.device_put(target_sample, device=cpus[0]).T, bins=300, density=True,
+        ax1.hist2d(*jnp.transpose(target_sample), bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
 
-        ax2.hist2d(*jax.device_put(z_sample, device=cpus[0]).T, bins=300, density=True,
+        ax2.hist2d(*jnp.transpose(z_sample), bins=300, density=True,
                    range=[[-1.5, 1.5], [-1.5, 1.5]])
         p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
         logp = p_z0(z_density) - logp_diff.reshape(-1)
-        ax3.tricontourf(*jax.device_put(z_t1, device=cpus[0]).T,
-                        np.exp(jax.device_put(logp, device=cpus[0])), 200)
+        z_t1_copy = z_t1
+        ax3.tricontourf(*jnp.transpose(z_t1_copy),
+                        jnp.exp(logp), 200)
 
         plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
                     pad_inches=0.2, bbox_inches='tight')
