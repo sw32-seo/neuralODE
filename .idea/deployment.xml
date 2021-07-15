@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="seung-wooseo@35.232.140.186:22" remoteFilesAllowedToDisappearOnAutoupload="false">
+  <component name="PublishConfigData" autoUpload="Always" serverName="seungwooseo@192.168.2.131:22 password" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
-      <paths name="seung-wooseo@35.232.140.186:22">
+      <paths name="seungwooseo@192.168.2.131:22">
         <serverdata>
           <mappings>
-            <mapping deploy="/home/seung-wooseo/working_projects/neuralODE" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/db2/users/seungwooseo/PycharmProjects/neuralODE" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="seungwooseo@192.168.2.131:22 password">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/db2/users/seungwooseo/PycharmProjects/neuralODE" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
