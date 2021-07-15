@@ -178,8 +178,8 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
         pos_params = freeze(pos_unflat_params)
         output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1)
-        z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample = output
-        create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample)
+        z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1 = output
+        create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1)
 
 
 def solve_dynamics(dynamics_fn, initial_state, t):
@@ -215,9 +215,9 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     # )
 
     # Generate evolution of density
-    x = np.linspace(-1.5, 1.5, 100)
-    y = np.linspace(-1.5, 1.5, 100)
-    points = np.vstack(np.meshgrid(x, y)).reshape([2, -1]).T
+    x = jnp.linspace(-1.5, 1.5, 100)
+    y = jnp.linspace(-1.5, 1.5, 100)
+    points = jnp.vstack(jnp.meshgrid(x, y)).reshape([2, -1]).T
 
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
@@ -231,10 +231,10 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     #     rtol=1e-5,
     # )
 
-    return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample
+    return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1
 
 
-def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample):
+def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1):
     # Create plots for each timestep
     for (t, z_sample, z_density, logp_diff) in zip(
             np.linspace(t0, t1, viz_timesteps),
