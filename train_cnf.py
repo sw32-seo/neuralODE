@@ -16,6 +16,7 @@ from flax import linen as nn
 from flax import serialization
 import optax
 from sklearn.datasets import make_circles
+from tqdm import tqdm
 
 
 os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
@@ -183,13 +184,13 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
 
 
 def solve_dynamics(dynamics_fn, initial_state, t):
-    @partial(jax.jit, backend="cpu")
+    @jax.jit
     def f(initial_state, t):
         return odeint(dynamics_fn, initial_state, t, atol=1e-5, rtol=1e-5)
     return f(initial_state, t)
 
 
-@partial(jax.jit, backend="cpu", static_argnums=(2, 3, 4, 5, 6))
+@partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
     viz_samples = 10000
@@ -237,7 +238,7 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
 def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1):
     # Create plots for each timestep
     for (t, z_sample, z_density, logp_diff) in zip(
-            np.linspace(t0, t1, viz_timesteps),
+            tqdm(np.linspace(t0, t1, viz_timesteps)),
             z_t_samples, z_t_density, logp_diff_t
     ):
         fig = plt.figure(figsize=(12, 4), dpi=200)
