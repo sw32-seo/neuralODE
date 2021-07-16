@@ -38,7 +38,7 @@ class HyperNetwork(nn.Module):
     def __call__(self, t):
         # predict params
         blocksize = self.width * self.in_out_dim
-        params = t.reshape((1, 1))
+        params = lax.expand_dims(t, (0, 1))
         params = nn.Dense(self.hidden_dim)(params)
         params = nn.tanh(params)
         params = nn.Dense(self.hidden_dim)(params)
@@ -46,38 +46,27 @@ class HyperNetwork(nn.Module):
         params = nn.Dense(3 * blocksize + self.width)(params)
 
         # restructure
-        params = params.reshape(-1)
-        W = params[:blocksize].reshape((self.width, self.in_out_dim, 1))
+        params = lax.reshape(params, (3 * blocksize + self.width,))
+        W = lax.reshape(params[:blocksize], (self.width, self.in_out_dim, 1))
 
-        U = params[blocksize:2 * blocksize].reshape((self.width, 1, self.in_out_dim))
+        U = lax.reshape(params[blocksize:2 * blocksize], (self.width, 1, self.in_out_dim))
 
-        G = params[2 * blocksize:3 * blocksize].reshape((self.width, 1, self.in_out_dim))
+        G = lax.reshape(params[2 * blocksize:3 * blocksize], (self.width, 1, self.in_out_dim))
         U = U * nn.sigmoid(G)
 
-        B = params[3 * blocksize:].reshape((self.width, 1, 1))
-        return [W, B, U]
+        B = lax.expand_dims(params[3 * blocksize:], (1, 2))
+        return W, B, U
 
 
 def trace_df_dz(f, z):
     """Calculates the trace of the Jacobian df/dz."""
-    df_dz = jax.jacrev(f)(z)
-    return jnp.diag(jnp.trace(df_dz, 0, 1, 3))
-
-
-class DZDT(nn.Module):
-    in_out_dim: Any = 2
-    hidden_dim: Any = 32
-    width: Any = 64
-
-    @nn.compact
-    def __call__(self, z, t):
-        W, B, U = HyperNetwork(self.in_out_dim, self.hidden_dim, self.width)(t)
-        Z = jnp.expand_dims(z, 0)
-        Z = jnp.repeat(Z, self.width, 0)
-        h = nn.tanh(jnp.matmul(Z, W) + B)
-        dz_dt = jnp.matmul(h, U).mean(0)
-
-        return dz_dt
+    sum_diag = 0.
+    sum_f = lambda z, i: lax.index_in_dim(jnp.sum(f(z), 1), i, keepdims=False)
+    for i in range(z.shape[1]):
+        sum_diag += jax.grad(sum_f)(z, i)[:, i]
+    # df_dz = jax.jacrev(f)(z)
+    # return jnp.diag(jnp.trace(df_dz, 0, 1, 3))
+    return sum_diag
 
 
 class CNF(nn.Module):
@@ -91,12 +80,21 @@ class CNF(nn.Module):
     @nn.compact
     def __call__(self, t, states):
         z, logp_z = states
+        W, B, U = HyperNetwork(self.in_out_dim, self.hidden_dim, self.width)(t)
 
-        func_dz_dt = lambda Z: DZDT(self.in_out_dim, self.hidden_dim, self.width)(Z, t)
-        dz_dt = func_dz_dt(z)
-        dlogp_z_dt = -trace_df_dz(func_dz_dt, z)
+        # TODO Below should be converted using vmap
+        def dzdt(z):
+            Z = lax.expand_dims(z, (0,))
+            Z = jnp.repeat(Z, self.width, 0)
+            h = nn.tanh(jnp.matmul(Z, W) + B)
+            return jnp.matmul(h, U).mean(0)
 
-        return dz_dt, dlogp_z_dt.reshape((-1, 1))
+        dz_dt = dzdt(z)
+        sum_dzdt = lambda z: jnp.sum(dzdt(z), 1)
+        df_dz = jax.jacrev(sum_dzdt)(z)
+        dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 1, 2)
+
+        return (dz_dt, lax.reshape(dlogp_z_dt, (z.shape[0], 1)))
 
 
 class Neg_CNF(nn.Module):
@@ -109,7 +107,7 @@ class Neg_CNF(nn.Module):
     def __call__(self, t, states):
         dz_dt, dlogp_z_dt = CNF(self.in_out_dim, self.hidden_dim, self.width)(t, states)
 
-        return -dz_dt, -dlogp_z_dt
+        return (-1.0 * dz_dt, -1.0 * dlogp_z_dt)
 
 
 def get_batch(num_samples):
@@ -125,13 +123,24 @@ def get_batch(num_samples):
 
 def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     """Creates initial 'TrainState'."""
-    z, logp_z = get_batch(1)
+    z, logp_z = get_batch(10)
     neg_cnf = Neg_CNF(in_out_dim, hidden_dim, width)
     params = neg_cnf.init(rng, jnp.array(10.), (z, logp_z))['params']
+    # set_params(params)
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
         apply_fn=neg_cnf.apply, params=params, tx=tx
     )
+
+
+def set_params(params):
+    # Convert all value of Params to certain constant
+    params = unfreeze(params)
+    # Get flattened-key: value list.
+    flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(params).items()}
+    unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.1 * jnp.ones_like(v) for k, v in flat_params.items()})
+    new_params = freeze(unflat_params)
+    Neg_CNF().apply({'params': new_params}, jnp.array(0.), (jnp.array([[0., 1.], [2., 3.]]), jnp.zeros((2, 1))))
 
 
 @partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
@@ -145,12 +154,12 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
         z_t, logp_diff_t = odeint(
             func,
             (x, logp_diff_t1),
-            -jnp.array([t1, t0]),
+            -1.0 * jnp.array([t1, t0]),
             atol=1e-5,
             rtol=1e-5
         )
         z_t0, logp_diff_t0 = z_t[-1], logp_diff_t[-1]
-        logp_x = p_z0(z_t0) - logp_diff_t0.reshape(-1)
+        logp_x = p_z0(z_t0) - lax.squeeze(logp_diff_t0, dimensions=(1,))
         loss = -logp_x.mean(0)
         return loss
     grad_fn = jax.value_and_grad(loss_fn)
@@ -210,7 +219,7 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     # Generate evolution of density
     x = jnp.linspace(-1.5, 1.5, 100)
     y = jnp.linspace(-1.5, 1.5, 100)
-    points = jnp.vstack(jnp.meshgrid(x, y)).reshape([2, -1]).T
+    points = np.vstack(jnp.meshgrid(x, y)).reshape([2, -1]).T
 
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
@@ -253,7 +262,7 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
         p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
-        logp = p_z0(z_density) - logp_diff.reshape(-1)
+        logp = p_z0(z_density) - lax.reshape(logp_diff, (z_density.shape[0]))
         ax3.tricontourf(*jnp.transpose(z_t1),
                         jnp.exp(logp), 200)
 
@@ -269,4 +278,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.00001, 1000, 512, 2, 8, 64, 0., 10., True)
+    train(0.001, 100, 512, 2, 32, 64, 0., 10., True)
