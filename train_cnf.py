@@ -7,7 +7,8 @@ from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional, NewType
 from jax import lax, random, vmap, scipy, numpy as jnp
-from jax.experimental.ode import odeint
+# from jax.experimental.ode import odeint
+from models.ode import odeint
 import flax
 from flax.training import train_state
 from flax import traverse_util
@@ -19,7 +20,7 @@ from sklearn.datasets import make_circles
 from tqdm import tqdm
 
 
-os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
+# os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
 
@@ -58,17 +59,6 @@ class HyperNetwork(nn.Module):
         return W, B, U
 
 
-def trace_df_dz(f, z):
-    """Calculates the trace of the Jacobian df/dz."""
-    sum_diag = 0.
-    sum_f = lambda z, i: lax.index_in_dim(jnp.sum(f(z), 1), i, keepdims=False)
-    for i in range(z.shape[1]):
-        sum_diag += jax.grad(sum_f)(z, i)[:, i]
-    # df_dz = jax.jacrev(f)(z)
-    # return jnp.diag(jnp.trace(df_dz, 0, 1, 3))
-    return sum_diag
-
-
 class CNF(nn.Module):
     """Adapted from the Pytorch implementation at:
     https://github.com/rtqichen/torchdiffeq/blob/master/examples/cnf.py
@@ -79,7 +69,7 @@ class CNF(nn.Module):
 
     @nn.compact
     def __call__(self, t, states):
-        z, logp_z = states
+        z, logp_z = states[..., :2], states[..., 2:]
         W, B, U = HyperNetwork(self.in_out_dim, self.hidden_dim, self.width)(t)
 
         # TODO Below should be converted using vmap
@@ -94,7 +84,7 @@ class CNF(nn.Module):
         df_dz = jax.jacrev(sum_dzdt)(z)
         dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 1, 2)
 
-        return (dz_dt, lax.reshape(dlogp_z_dt, (z.shape[0], 1)))
+        return lax.concatenate((dz_dt, lax.expand_dims(dlogp_z_dt, (1,))), 1)
 
 
 class Neg_CNF(nn.Module):
@@ -105,9 +95,9 @@ class Neg_CNF(nn.Module):
 
     @nn.compact
     def __call__(self, t, states):
-        dz_dt, dlogp_z_dt = CNF(self.in_out_dim, self.hidden_dim, self.width)(t, states)
+        outputs = CNF(self.in_out_dim, self.hidden_dim, self.width)(-1.0 * t, states)
 
-        return (-1.0 * dz_dt, -1.0 * dlogp_z_dt)
+        return -1.0 * outputs
 
 
 def get_batch(num_samples):
@@ -118,14 +108,14 @@ def get_batch(num_samples):
     x = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((num_samples, 1), dtype=jnp.float32)
 
-    return x, logp_diff_t1
+    return lax.concatenate((x, logp_diff_t1), 1)
 
 
 def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     """Creates initial 'TrainState'."""
-    z, logp_z = get_batch(10)
+    inputs = get_batch(10)
     neg_cnf = Neg_CNF(in_out_dim, hidden_dim, width)
-    params = neg_cnf.init(rng, jnp.array(10.), (z, logp_z))['params']
+    params = neg_cnf.init(rng, jnp.array(10.), inputs)['params']
     # set_params(params)
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
@@ -138,26 +128,29 @@ def set_params(params):
     params = unfreeze(params)
     # Get flattened-key: value list.
     flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(params).items()}
-    unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.1 * jnp.ones_like(v) for k, v in flat_params.items()})
+    unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.2 * jnp.ones_like(v) for k, v in flat_params.items()})
     new_params = freeze(unflat_params)
-    Neg_CNF().apply({'params': new_params}, jnp.array(0.), (jnp.array([[0., 1.], [2., 3.]]), jnp.zeros((2, 1))))
+    test_x = jnp.array([[0., 1.], [2., 3.]])
+    test_log_p = jnp.zeros(2, 1)
+    test_inputs = lax.concatenate((test_x, test_log_p), 1)
+    Neg_CNF().apply({'params': new_params}, jnp.array(0.), test_inputs)
 
 
 @partial(jax.jit, static_argnums=(2, 3, 4, 5, 6))
 def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
-    x, logp_diff_t1 = batch
     p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                             mean=jnp.array([0., 0.]),
                                                             cov=jnp.array([[0.1, 0.], [0., 0.1]]))
     def loss_fn(params):
-        func = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': params}, -t, states)
-        z_t, logp_diff_t = odeint(
+        func = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': params}, t, states)
+        outputs = odeint(
             func,
-            (x, logp_diff_t1),
+            batch,
             -1.0 * jnp.array([t1, t0]),
             atol=1e-5,
             rtol=1e-5
         )
+        z_t, logp_diff_t = outputs[..., :2], outputs[..., 2:]
         z_t0, logp_diff_t0 = z_t[-1], logp_diff_t[-1]
         logp_x = p_z0(z_t0) - lax.squeeze(logp_diff_t0, dimensions=(1,))
         loss = -logp_x.mean(0)
