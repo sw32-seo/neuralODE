@@ -69,22 +69,32 @@ class CNF(nn.Module):
 
     @nn.compact
     def __call__(self, t, states):
-        z, logp_z = states[..., :2], states[..., 2:]
+        z, logp_z = states[:, :2], states[:, 2:]
         W, B, U = HyperNetwork(self.in_out_dim, self.hidden_dim, self.width)(t)
 
         # TODO Below should be converted using vmap
-        def dzdt(z):
-            Z = lax.expand_dims(z, (0,))
-            Z = jnp.repeat(Z, self.width, 0)
-            h = nn.tanh(jnp.matmul(Z, W) + B)
-            return jnp.matmul(h, U).mean(0)
+        # def dzdt(z):
+        #     Z = lax.expand_dims(z, (0,))
+        #     Z = jnp.repeat(Z, self.width, 0)
+        #     h = nn.tanh(jnp.matmul(Z, W) + B)
+        #     return jnp.matmul(h, U).mean(0)
 
-        dz_dt = dzdt(z)
-        sum_dzdt = lambda z: jnp.sum(dzdt(z), 1)
-        df_dz = jax.jacrev(sum_dzdt)(z)
-        dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 1, 2)
+        def h(z):
+            return nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
 
-        return lax.concatenate((dz_dt, lax.expand_dims(dlogp_z_dt, (1,))), 1)
+        dz_dt = jnp.matmul(h(z), U).mean(0)
+        dh_dz, vjp_fun = jax.vjp(h, z)
+        u_dot_dh_dz, = vjp_fun(U)
+        # Sum to mean
+        u_dot_dh_dz /= 64.
+        dlogp_z_dt = - jnp.mean(u_dot_dh_dz, axis=1, keepdims=True)
+
+        # dz_dt = dzdt(z)
+        # sum_dzdt = lambda z: jnp.sum(dzdt(z), 1)
+        # df_dz = jax.jacrev(sum_dzdt)(z)
+        # dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 1, 2)
+
+        return lax.concatenate((dz_dt, dlogp_z_dt), 1)
 
 
 class Neg_CNF(nn.Module):
@@ -111,6 +121,17 @@ def get_batch(num_samples):
     return lax.concatenate((x, logp_diff_t1), 1)
 
 
+def multivariate_normal(z):
+    """
+    Log probability of multivariate_normal.
+    """
+    mean = jnp.array([0., 0.])
+    z_m = z - mean
+    cov = jnp.array([[0.1, 0.], [0., 0.1]])
+    logz = -jnp.log((2 * jnp.pi)) + -0.5 * jnp.log(jnp.linalg.det(cov)) + -0.5 * jnp.matmul(jnp.matmul(z_m.T, jnp.linalg.inv(cov)), z_m)
+    return logz
+
+
 def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     """Creates initial 'TrainState'."""
     inputs = get_batch(10)
@@ -128,10 +149,10 @@ def set_params(params):
     params = unfreeze(params)
     # Get flattened-key: value list.
     flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(params).items()}
-    unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.2 * jnp.ones_like(v) for k, v in flat_params.items()})
+    unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.1 * jnp.ones_like(v) for k, v in flat_params.items()})
     new_params = freeze(unflat_params)
     test_x = jnp.array([[0., 1.], [2., 3.]])
-    test_log_p = jnp.zeros(2, 1)
+    test_log_p = jnp.zeros((2, 1))
     test_inputs = lax.concatenate((test_x, test_log_p), 1)
     Neg_CNF().apply({'params': new_params}, jnp.array(0.), test_inputs)
 
@@ -141,6 +162,7 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                             mean=jnp.array([0., 0.]),
                                                             cov=jnp.array([[0.1, 0.], [0., 0.1]]))
+    vmap_multi = jax.vmap(multivariate_normal, 0, 0)
     def loss_fn(params):
         func = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': params}, t, states)
         outputs = odeint(
@@ -150,7 +172,7 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
             atol=1e-5,
             rtol=1e-5
         )
-        z_t, logp_diff_t = outputs[..., :2], outputs[..., 2:]
+        z_t, logp_diff_t = outputs[:, :, :2], outputs[:, :, 2:]
         z_t0, logp_diff_t0 = z_t[-1], logp_diff_t[-1]
         logp_x = p_z0(z_t0) - lax.squeeze(logp_diff_t0, dimensions=(1,))
         loss = -logp_x.mean(0)
@@ -195,8 +217,8 @@ def solve_dynamics(dynamics_fn, initial_state, t):
 def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
     viz_samples = 5000
-    viz_timesteps = 2
-    target_sample, _ = get_batch(viz_samples)
+    viz_timesteps = 3
+    target_sample = get_batch(viz_samples)[:, :2]
 
     if not os.path.exists('results/'):
         os.makedirs('results/')
@@ -207,17 +229,19 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     logp_diff_t0 = jnp.zeros((viz_samples, 1), dtype=jnp.float32)
 
     func_pos = lambda states, t: CNF(in_out_dim, hidden_dim, width).apply({'params': pos_params}, t, states)
-    z_t_samples, _ = solve_dynamics(func_pos, (z_t0, logp_diff_t0), jnp.linspace(t0, t1, viz_timesteps))
+    output = solve_dynamics(func_pos, lax.concatenate((z_t0, logp_diff_t0), 1), jnp.linspace(t0, t1, viz_timesteps))
+    z_t_samples, _ = output[..., :2], output[..., 2:]
 
     # Generate evolution of density
     x = jnp.linspace(-1.5, 1.5, 100)
     y = jnp.linspace(-1.5, 1.5, 100)
-    points = np.vstack(jnp.meshgrid(x, y)).reshape([2, -1]).T
+    points = np.vstack(np.meshgrid(x, y)).reshape([2, -1]).T
 
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
     func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, -t, states)
-    z_t_density, logp_diff_t = solve_dynamics(func_neg, (z_t1, logp_diff_t1), -jnp.linspace(t1, t0, viz_timesteps))
+    output = solve_dynamics(func_neg, lax.concatenate((z_t1, logp_diff_t1), 1), -jnp.linspace(t1, t0, viz_timesteps))
+    z_t_density, logp_diff_t = output[..., :2], output[..., 2:]
 
     return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1
 
@@ -255,7 +279,7 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
         p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                                 mean=jnp.array([0., 0.]),
                                                                 cov=jnp.array([[0.1, 0.], [0., 0.1]]))
-        logp = p_z0(z_density) - lax.reshape(logp_diff, (z_density.shape[0]))
+        logp = p_z0(z_density) - lax.squeeze(logp_diff, dimensions=(1,))
         ax3.tricontourf(*jnp.transpose(z_t1),
                         jnp.exp(logp), 200)
 
@@ -271,4 +295,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 100, 512, 2, 32, 64, 0., 10., True)
+    train(0.001, 100, 512, 2, 64, 128, 0., 10., True)
