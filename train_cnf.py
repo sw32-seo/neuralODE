@@ -72,29 +72,18 @@ class CNF(nn.Module):
         z, logp_z = states[:, :2], states[:, 2:]
         W, B, U = HyperNetwork(self.in_out_dim, self.hidden_dim, self.width)(t)
 
-        # TODO Below should be converted using vmap
-        # def dzdt(z):
-        #     Z = lax.expand_dims(z, (0,))
-        #     Z = jnp.repeat(Z, self.width, 0)
-        #     h = nn.tanh(jnp.matmul(Z, W) + B)
-        #     return jnp.matmul(h, U).mean(0)
+        def dzdt(z):
+            h = nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
+            return jnp.matmul(h, U).mean(0)
 
-        def h(z):
-            return nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
 
-        dz_dt = jnp.matmul(h(z), U).mean(0)
-        dh_dz, vjp_fun = jax.vjp(h, z)
-        u_dot_dh_dz, = vjp_fun(U)
-        # Sum to mean
-        u_dot_dh_dz /= 64.
-        dlogp_z_dt = - jnp.mean(u_dot_dh_dz, axis=1, keepdims=True)
+        # TODO I actually don't understand below.
+        dz_dt = dzdt(z)
+        sum_dzdt = lambda z: dzdt(z).sum(0)
+        df_dz = jax.jacrev(sum_dzdt)(z)
+        dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 0, 2)
 
-        # dz_dt = dzdt(z)
-        # sum_dzdt = lambda z: jnp.sum(dzdt(z), 1)
-        # df_dz = jax.jacrev(sum_dzdt)(z)
-        # dlogp_z_dt = -1.0 * jnp.trace(df_dz, 0, 1, 2)
-
-        return lax.concatenate((dz_dt, dlogp_z_dt), 1)
+        return lax.concatenate((dz_dt, lax.expand_dims(dlogp_z_dt, (1,))), 1)
 
 
 class Neg_CNF(nn.Module):
@@ -137,7 +126,7 @@ def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     inputs = get_batch(10)
     neg_cnf = Neg_CNF(in_out_dim, hidden_dim, width)
     params = neg_cnf.init(rng, jnp.array(10.), inputs)['params']
-    # set_params(params)
+    set_params(params)
     tx = optax.adam(learning_rate)
     return train_state.TrainState.create(
         apply_fn=neg_cnf.apply, params=params, tx=tx
@@ -151,8 +140,8 @@ def set_params(params):
     flat_params = {'/'.join(k): v for k, v in traverse_util.flatten_dict(params).items()}
     unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): 0.1 * jnp.ones_like(v) for k, v in flat_params.items()})
     new_params = freeze(unflat_params)
-    test_x = jnp.array([[0., 1.], [2., 3.]])
-    test_log_p = jnp.zeros((2, 1))
+    test_x = jnp.array([[0., 1.], [2., 3.], [4., 5.]])
+    test_log_p = jnp.zeros((3, 1))
     test_inputs = lax.concatenate((test_x, test_log_p), 1)
     Neg_CNF().apply({'params': new_params}, jnp.array(0.), test_inputs)
 
@@ -203,6 +192,7 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         pos_flat_params = {key[6:]: jnp.array(np.array(neg_flat_params[key])) for key in list(neg_flat_params.keys())}
         pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
         pos_params = freeze(pos_unflat_params)
+        jax.profiler.save_device_memory_profile("memory.prof")
         output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1)
         z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1 = output
         create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1)
@@ -216,8 +206,8 @@ def solve_dynamics(dynamics_fn, initial_state, t):
 
 def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
     """Adapted from PyTorch """
-    viz_samples = 5000
-    viz_timesteps = 3
+    viz_samples = 30000
+    viz_timesteps = 41
     target_sample = get_batch(viz_samples)[:, :2]
 
     if not os.path.exists('results/'):
@@ -295,4 +285,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 100, 512, 2, 64, 128, 0., 10., True)
+    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True)

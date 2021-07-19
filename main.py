@@ -1,18 +1,21 @@
 import argparse
 import train_ode
 import train_resnet
+import train_cnf
 
 
 def main(args):
     if args.model == 'odenet':
         train_ode.train_and_evaluate(args.lr, args.n_epoch, args.batch_size, args.tol)
-    else:
+    elif args.model == 'resnet':
         train_resnet.train_and_evaluate(args.lr, args.n_epoch, args.batch_size)
+    elif args.model == 'cnf':
+        train_cnf.train()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='main.py')
-    parser.add_argument("--model", type=str, choices=['odenet', 'resnet'], default="odenet", help="Type of model")
+    parser.add_argument("--model", type=str, choices=['odenet', 'resnet', 'cnf'], default="odenet", help="Type of model")
     parser.add_argument("--tol", type=float, default=1e-1,
                         help="Error tolerance for ODE solver. This only works with odenet")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")

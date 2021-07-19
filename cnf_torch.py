@@ -150,7 +150,7 @@ if __name__ == '__main__':
     func = CNF(in_out_dim=2, hidden_dim=args.hidden_dim, width=args.width).to(device)
     for param in func.parameters():
         nn.init.constant_(param, 0.1)
-    func(torch.tensor(0.).to(device), (torch.tensor([[0., 1.], [2., 3.]]).to(device), torch.zeros((2, 1)).to(device)))
+    func(torch.tensor(0.).to(device), (torch.tensor([[0., 1.], [2., 3.], [4., 5.]]).to(device), torch.zeros((2, 1)).to(device)))
     optimizer = optim.Adam(func.parameters(), lr=args.lr)
     p_z0 = torch.distributions.MultivariateNormal(
         loc=torch.tensor([0.0, 0.0]).to(device),
