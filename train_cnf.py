@@ -299,4 +299,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True, 'two_moons')
+    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True, 'circles')

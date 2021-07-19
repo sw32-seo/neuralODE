@@ -40,3 +40,13 @@ For Neural ODE training,
 python main.py --model=odenet --lr=1e-4 --n_epoch=20 --batch_size=64
 ```
 
+For Continuous Normalizing Flow,
+```bash
+python main.py --model=cnf --sample_dataset=circles
+```
+
+# Sample Results
+
+![cnf-viz](https://user-images.githubusercontent.com/72425253/126116823-a014f13a-1171-4309-898f-0b6aedd84649.gif)
+![cnf-viz](https://user-images.githubusercontent.com/72425253/126117205-fa68c16b-fba1-48a0-a965-3ac6cb5e201c.gif)
+
