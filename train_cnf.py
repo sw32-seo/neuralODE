@@ -205,7 +205,7 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         jax.profiler.save_device_memory_profile("memory.prof")
         output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1, dataset)
         z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1 = output
-        create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1)
+        create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1, dataset)
 
 
 def solve_dynamics(dynamics_fn, initial_state, t):
@@ -243,14 +243,14 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1, dataset):
 
     z_t1 = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((z_t1.shape[0], 1), dtype=jnp.float32)
-    func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, -t, states)
+    func_neg = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': neg_params}, t, states)
     output = solve_dynamics(func_neg, lax.concatenate((z_t1, logp_diff_t1), 1), -jnp.linspace(t1, t0, viz_timesteps))
     z_t_density, logp_diff_t = output[..., :2], output[..., 2:]
 
     return z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1
 
 
-def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1):
+def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1, dataset):
     # Create plots for each timestep
     for (t, z_sample, z_density, logp_diff) in zip(
             tqdm(np.linspace(t0, t1, viz_timesteps)),
@@ -287,16 +287,16 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
         ax3.tricontourf(*jnp.transpose(z_t1),
                         jnp.exp(logp), 200)
 
-        plt.savefig(os.path.join('results/', f"cnf-viz-{int(t * 1000):05d}.jpg"),
+        plt.savefig(os.path.join('results_%s/' % dataset, f"cnf-viz-{int(t * 1000):05d}.jpg"),
                     pad_inches=0.2, bbox_inches='tight')
         plt.close()
 
-    img, *imgs = [Image.open(f) for f in sorted(glob.glob(os.path.join('results/', f"cnf-viz-*.jpg")))]
-    img.save(fp=os.path.join('results/', "cnf-viz.gif"), format='GIF', append_images=imgs,
+    img, *imgs = [Image.open(f) for f in sorted(glob.glob(os.path.join('results_%s/' % dataset, f"cnf-viz-*.jpg")))]
+    img.save(fp=os.path.join('results_%s/' % dataset, "cnf-viz.gif"), format='GIF', append_images=imgs,
              save_all=True, duration=250, loop=0)
 
-    print('Saved visualization animation at {}'.format(os.path.join('results/', "cnf-viz.gif")))
+    print('Saved visualization animation at {}'.format(os.path.join('results_%s/' % dataset, "cnf-viz.gif")))
 
 
 if __name__ == '__main__':
-    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True, 'circles')
+    train(0.001, 1, 512, 2, 32, 64, 0., 10., True, 'circles')

@@ -47,6 +47,5 @@ python main.py --model=cnf --sample_dataset=circles
 
 # Sample Results
 
-![cnf-viz](https://user-images.githubusercontent.com/72425253/126116823-a014f13a-1171-4309-898f-0b6aedd84649.gif)
-![cnf-viz](https://user-images.githubusercontent.com/72425253/126117205-fa68c16b-fba1-48a0-a965-3ac6cb5e201c.gif)
-
+![cnf-viz](https://user-images.githubusercontent.com/72425253/126124351-44e00438-055e-4b1c-90ee-758a545dd602.gif)
+![cnf-viz](https://user-images.githubusercontent.com/72425253/126124648-dcb3f8f4-396a-447c-96cf-f9304377fa48.gif)

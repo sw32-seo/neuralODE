@@ -22,7 +22,7 @@ if __name__ == '__main__':
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--n_epoch", type=int, default=10, help="Total number of epoch")
     parser.add_argument("--batch_size", type=int, default=32, help="Number of images in batch")
-    parser.add_argument("--sample_dataset", type=str, choices=['circels', 'moons'], default="circles",
+    parser.add_argument("--sample_dataset", type=str, choices=['circles', 'moons'], default="circles",
                         help="Sample dataset")
     parser.add_argument("--viz", action='store_true')
 

@@ -15,7 +15,7 @@ import torch.optim as optim
 parser = argparse.ArgumentParser()
 parser.add_argument('--adjoint', action='store_true')
 parser.add_argument('--viz', action='store_true', default=True)
-parser.add_argument('--niters', type=int, default=10000)
+parser.add_argument('--niters', type=int, default=1)
 parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--num_samples', type=int, default=512)
 parser.add_argument('--width', type=int, default=64)
@@ -148,9 +148,9 @@ if __name__ == '__main__':
 
     # model
     func = CNF(in_out_dim=2, hidden_dim=args.hidden_dim, width=args.width).to(device)
-    for param in func.parameters():
-        nn.init.constant_(param, 0.1)
-    func(torch.tensor(0.).to(device), (torch.tensor([[0., 1.], [2., 3.], [4., 5.]]).to(device), torch.zeros((2, 1)).to(device)))
+    # for param in func.parameters():
+    #     nn.init.constant_(param, 0.1)
+    # func(torch.tensor(0.).to(device), (torch.tensor([[0., 1.], [2., 3.], [4., 5.]]).to(device), torch.zeros((2, 1)).to(device)))
     optimizer = optim.Adam(func.parameters(), lr=args.lr)
     p_z0 = torch.distributions.MultivariateNormal(
         loc=torch.tensor([0.0, 0.0]).to(device),
