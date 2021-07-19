@@ -41,7 +41,7 @@ class ConcatConv2D(nn.Module):
     @nn.compact
     def __call__(self, inputs, t):
         x = inputs
-        tt = jnp.ones_like(x[..., :1]) * t
+        tt = jnp.ones_like(x[:, :, :1]) * t
         ttx = jnp.concatenate([tt, x], -1)
         return nn.Conv(features=self.dim_out, kernel_size=(self.ksize, self.ksize))(ttx)
 

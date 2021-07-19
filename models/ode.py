@@ -13,12 +13,15 @@
 # limitations under the License.
 
 """JAX-based Dormand-Prince ODE integration with adaptive stepsize.
+
 Integrate systems of ordinary differential equations (ODEs) using the JAX
 autograd/diff library and the Dormand-Prince method for adaptive integration
 stepsize calculation. Provides improved integration accuracy over fixed
 stepsize integration methods.
+
 For details of the mixed 4th/5th order Runge-Kutta integration method, see
 https://doi.org/10.1090/S0025-5718-1986-0815836-3
+
 Adjoint algorithm based on Appendix C of https://arxiv.org/pdf/1806.07366.pdf
 """
 
@@ -78,7 +81,6 @@ def initial_step_size(fun, t0, y0, order, rtol, atol, f0):
   h0 = jnp.where((d0 < 1e-5) | (d1 < 1e-5), 1e-6, 0.01 * d0 / d1)
 
   y1 = y0 + h0 * f0
-
   f1 = fun(y1, t0 + h0)
   d2 = jnp.linalg.norm((f1 - f0) / scale) / h0
 
@@ -142,6 +144,7 @@ def optimal_step_size(last_step, mean_error_ratio, safety=0.9, ifactor=10.0,
 
 def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf):
   """Adaptive stepsize (Dormand-Prince) Runge-Kutta odeint implementation.
+
   Args:
     func: function to evaluate the time derivative of the solution `y` at time
       `t` as `func(y, t, *args)`, producing the same shape/structure as `y0`.
@@ -154,6 +157,7 @@ def odeint(func, y0, t, *args, rtol=1.4e-8, atol=1.4e-8, mxstep=jnp.inf):
     rtol: float, relative local error tolerance for solver (optional).
     atol: float, absolute local error tolerance for solver (optional).
     mxstep: int, maximum number of steps to take for each timepoint (optional).
+
   Returns:
     Values of the solution `y` (i.e. integrated system values) at each time
     point in `t`, represented as an array (or pytree of arrays) with the same
@@ -203,8 +207,6 @@ def _odeint(func, rtol, atol, mxstep, y0, ts, *args):
     y_target = jnp.polyval(interp_coeff, relative_output_time)
     return carry, y_target
 
-  # ODEfunc with NFE counter will give auxilarly output for nfe.
-  # Below code is modified to skip that output.
   f0 = func_(y0, ts[0])
   dt = initial_step_size(func_, ts[0], y0, 4, rtol, atol, f0)
   interp_coeff = jnp.array([y0] * 5)
