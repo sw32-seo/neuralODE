@@ -16,7 +16,7 @@ from flax.core import freeze, unfreeze
 from flax import linen as nn
 from flax import serialization
 import optax
-from sklearn.datasets import make_circles
+from sklearn.datasets import make_circles, make_moons
 from tqdm import tqdm
 
 
@@ -97,11 +97,19 @@ class Neg_CNF(nn.Module):
         return -1.0 * outputs
 
 
-def get_batch(num_samples):
+def get_batch_circles(num_samples):
     """Adapted from the Pytorch implementation at:
     https://github.com/rtqichen/torchdiffeq/blob/master/examples/cnf.py
     """
     points, _ = make_circles(n_samples=num_samples, noise=0.06, factor=0.5)
+    x = jnp.array(points, dtype=jnp.float32)
+    logp_diff_t1 = jnp.zeros((num_samples, 1), dtype=jnp.float32)
+
+    return lax.concatenate((x, logp_diff_t1), 1)
+
+
+def get_batch_moons(num_samples):
+    points, _ = make_moons(n_samples=num_samples, noise=0.05)
     x = jnp.array(points, dtype=jnp.float32)
     logp_diff_t1 = jnp.zeros((num_samples, 1), dtype=jnp.float32)
 
@@ -121,7 +129,7 @@ def multivariate_normal(z):
 
 def create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width):
     """Creates initial 'TrainState'."""
-    inputs = get_batch(10)
+    inputs = jnp.ones((1, 2))
     neg_cnf = Neg_CNF(in_out_dim, hidden_dim, width)
     params = neg_cnf.init(rng, jnp.array(10.), inputs)['params']
     set_params(params)
@@ -171,10 +179,14 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     return state, loss
 
 
-def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0, t1, visual):
+def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0, t1, visual, dataset):
     """Train the model."""
     rng = jax.random.PRNGKey(0)
     state = create_train_state(rng, learning_rate, in_out_dim, hidden_dim, width)
+    if dataset == "circles":
+        get_batch = lambda num_samples: get_batch_circles(num_samples)
+    elif dataset == "moons":
+        get_batch = lambda num_samples: get_batch_moons(num_samples)
 
     for itr in range(1, n_iters+1):
         batch = get_batch(batch_size)
@@ -191,7 +203,7 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         pos_unflat_params = traverse_util.unflatten_dict({tuple(k.split('/')): v for k, v in pos_flat_params.items()})
         pos_params = freeze(pos_unflat_params)
         jax.profiler.save_device_memory_profile("memory.prof")
-        output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1)
+        output = viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1, dataset)
         z_t_samples, z_t_density, logp_diff_t, viz_timesteps, target_sample, z_t1 = output
         create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, target_sample, z_t1)
 
@@ -202,14 +214,18 @@ def solve_dynamics(dynamics_fn, initial_state, t):
     return f(initial_state, t)
 
 
-def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1):
+def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1, dataset):
     """Adapted from PyTorch """
     viz_samples = 30000
     viz_timesteps = 41
+    if dataset == "circles":
+        get_batch = lambda num_samples: get_batch_circles(num_samples)
+    elif dataset == "moons":
+        get_batch = lambda num_samples: get_batch_moons(num_samples)
     target_sample = get_batch(viz_samples)[:, :2]
 
-    if not os.path.exists('results/'):
-        os.makedirs('results/')
+    if not os.path.exists('results_%s/' % dataset):
+        os.makedirs('results_%s/' % dataset)
 
     z_t0 = jnp.array(np.random.multivariate_normal(mean=np.array([0., 0.]),
                                                    cov=np.array([[0.1, 0.], [0., 0.1]]),
@@ -283,4 +299,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True)
+    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True, 'two_moons')
