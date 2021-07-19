@@ -10,7 +10,7 @@ def main(args):
     elif args.model == 'resnet':
         train_resnet.train_and_evaluate(args.lr, args.n_epoch, args.batch_size)
     elif args.model == 'cnf':
-        train_cnf.train()
+        train_cnf.train(0.001, 1000, 512, 2, 32, 64, 0., 10., True)
 
 
 if __name__ == '__main__':
