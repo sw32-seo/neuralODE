@@ -76,8 +76,6 @@ class CNF(nn.Module):
             h = nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
             return jnp.matmul(h, U).mean(0)
 
-
-        # TODO I actually don't understand below.
         dz_dt = dzdt(z)
         sum_dzdt = lambda z: dzdt(z).sum(0)
         df_dz = jax.jacrev(sum_dzdt)(z)
