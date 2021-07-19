@@ -16,7 +16,7 @@ from flax.core import freeze, unfreeze
 from flax import linen as nn
 from flax import serialization
 import optax
-from sklearn.datasets import make_circles, make_moons
+from sklearn.datasets import make_circles, make_moons, make_s_curve
 from tqdm import tqdm
 
 
@@ -116,6 +116,16 @@ def get_batch_moons(num_samples):
     return lax.concatenate((x, logp_diff_t1), 1)
 
 
+def get_batch_scurve(num_samples):
+    points, _ = make_s_curve(n_samples=num_samples, noise=0.05, random_state=0)
+    x1 = jnp.array(points, dtype=jnp.float32)[:, :1]
+    x2 = jnp.array(points, dtype=jnp.float32)[:, 2:]
+    x = lax.concatenate((x1, x2), 1)
+    logp_diff_t1 = jnp.zeros((num_samples, 1), dtype=jnp.float32)
+
+    return lax.concatenate((x, logp_diff_t1), 1)
+
+
 def multivariate_normal(z):
     """
     Log probability of multivariate_normal.
@@ -187,6 +197,8 @@ def train(learning_rate, n_iters, batch_size, in_out_dim, hidden_dim, width, t0,
         get_batch = lambda num_samples: get_batch_circles(num_samples)
     elif dataset == "moons":
         get_batch = lambda num_samples: get_batch_moons(num_samples)
+    elif dataset == "scurve":
+        get_batch = lambda num_samples: get_batch_scurve(num_samples)
 
     for itr in range(1, n_iters+1):
         batch = get_batch(batch_size)
@@ -222,6 +234,8 @@ def viz(neg_params, pos_params, in_out_dim, hidden_dim, width, t0, t1, dataset):
         get_batch = lambda num_samples: get_batch_circles(num_samples)
     elif dataset == "moons":
         get_batch = lambda num_samples: get_batch_moons(num_samples)
+    elif dataset == "scurve":
+        get_batch = lambda num_samples: get_batch_scurve(num_samples)
     target_sample = get_batch(viz_samples)[:, :2]
 
     if not os.path.exists('results_%s/' % dataset):
@@ -299,4 +313,4 @@ def create_plots(z_t_samples, z_t_density, logp_diff_t, t0, t1, viz_timesteps, t
 
 
 if __name__ == '__main__':
-    train(0.001, 1, 512, 2, 32, 64, 0., 10., True, 'circles')
+    train(0.001, 1000, 512, 2, 32, 64, 0., 10., True, 'scurve')

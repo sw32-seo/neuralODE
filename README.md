@@ -44,8 +44,10 @@ For Continuous Normalizing Flow,
 ```bash
 python main.py --model=cnf --sample_dataset=circles
 ```
+Sample datasets can be chosen as circles, moons, or scurve.
 
 # Sample Results
 
 ![cnf-viz](https://user-images.githubusercontent.com/72425253/126124351-44e00438-055e-4b1c-90ee-758a545dd602.gif)
 ![cnf-viz](https://user-images.githubusercontent.com/72425253/126124648-dcb3f8f4-396a-447c-96cf-f9304377fa48.gif)
+![cnf-viz](https://user-images.githubusercontent.com/72425253/126127269-4c02ee6a-a9a3-4b9f-b380-f8669f58872b.gif)
