@@ -76,6 +76,20 @@ class CNF(nn.Module):
             h = nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
             return jnp.matmul(h, U).mean(0)
 
+        # Naive version
+        # def h(z):
+        #     return nn.tanh(vmap(jnp.matmul, (None, 0))(z, W) + B)
+        # dh_dz = jax.jacrev(h)(z)
+        # matmul_1 = vmap(jnp.matmul, in_axes=(3, None), out_axes=3)
+        # matmul_2 = vmap(matmul_1, in_axes=(4, None), out_axes=4)
+        # u_dot_dh_dz = matmul_2(dh_dz, U).mean(0).sum(0)
+        # dlogp_z_dt = -1.0 * jnp.trace(u_dot_dh_dz, 0, 0, 2)
+
+        # More advanced.
+        # u_dot_dh_dz = jax.jacrev(dzdt)(z).sum(0)
+        # dlogp_z_dt = -1.0 * jnp.trace(u_dot_dh_dz, 0, 0, 2)
+
+        # Final version
         dz_dt = dzdt(z)
         sum_dzdt = lambda z: dzdt(z).sum(0)
         df_dz = jax.jacrev(sum_dzdt)(z)
