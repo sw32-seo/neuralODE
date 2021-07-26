@@ -2,7 +2,8 @@ from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional, NewType
 from jax import lax, random, vmap, numpy as jnp
-from jax.experimental.ode import odeint
+#from jax.experimental.ode import odeint
+from models.ode import odeint
 import flax
 from flax.training import train_state
 from flax import traverse_util
@@ -14,6 +15,9 @@ import tensorflow_datasets as tfds
 import numpy as np
 from tqdm import tqdm
 import os
+
+
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 
 
 # Define Residual Block
@@ -88,10 +92,10 @@ class ODEBlock(nn.Module):
     def __call__(self, inputs, params):
         ode_func = ODEfunc()
         ode_func_apply = lambda x, t: ode_func.apply(variables={'params': params}, inputs=x, t=t)
-        init_state, final_state = odeint(ode_func_apply,
-                                         inputs, jnp.array([0., 1.]),
-                                         rtol=self.tol, atol=self.tol)
-        return final_state
+        states, nfe = odeint(ode_func_apply,
+                             inputs, jnp.array([0., 1.]),
+                             rtol=self.tol, atol=self.tol)
+        return states[-1], nfe
 
 
 class ODEBlockVmap(nn.Module):
@@ -125,7 +129,7 @@ class FullODENet(nn.Module):
         ode_func = ODEfunc()
         init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
         ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
-        x = ODEBlockVmap(tol=self.tol)(x, ode_func_params)
+        x, nfe = ODEBlockVmap(tol=self.tol)(x, ode_func_params)
 
         x = nn.GroupNorm(self.dim_out)(x)
         x = nn.relu(x)
@@ -136,7 +140,7 @@ class FullODENet(nn.Module):
         x = nn.Dense(features=10)(x)
         x = nn.log_softmax(x)
 
-        return x
+        return x, nfe
 
 
 # Define loss
@@ -147,13 +151,13 @@ def cross_entropy_loss(logits, labels):
 
 
 # Metric computation
-@jax.jit
-def compute_metrics(logits, labels):
+def compute_metrics(logits, labels, nfe):
     loss = cross_entropy_loss(logits=logits, labels=labels)
     accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
     metrics = {
         'loss': loss,
         'accuracy': accuracy,
+        'nfe': nfe
     }
     return metrics
 
@@ -184,21 +188,22 @@ def create_train_state(rng, learning_rate, tol):
 def train_step(state, batch, tol):
     """Train for a single step."""
     def loss_fn(params):
-        logits = FullODENet(tol=tol).apply({'params': params}, batch['image'])
+        logits, nfe = FullODENet(tol=tol).apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
-        return loss, logits
-    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-    (_, logits), grads = grad_fn(state.params)
+        return (loss, lax.concatenate((logits, lax.expand_dims(lax.stop_gradient(nfe), (1,))), 1))
+    _, logits = loss_fn(state.params)
+    grad_fn = jax.grad(loss_fn, has_aux=True)
+    grads = grad_fn(state.params)
     state = state.apply_gradients(grads=grads)
-    metrics = compute_metrics(logits=logits, labels=batch['label'])
+    metrics = compute_metrics(logits=logits[:, :-1], labels=batch['label'], nfe=logits[:, -1:].mean())
     return state, metrics
 
 
 # Evaluation step
 @partial(jax.jit, static_argnums=(2,))
 def eval_step(params, batch, tol):
-    logits = FullODENet(tol=tol).apply({'params': params}, batch['image'])
-    return compute_metrics(logits=logits, labels=batch['label'])
+    logits, nfe = FullODENet(tol=tol).apply({'params': params}, batch['image'])
+    return compute_metrics(logits=logits, labels=batch['label'], nfe=nfe.mean())
 
 
 # Train function
@@ -222,8 +227,8 @@ def train_epoch(state, train_ds, batch_size, epoch, rng, tol):
             k: np.mean([metrics[k] for metrics in batch_metrics_np])
             for k in batch_metrics_np[0]
         }
-    print('train epoch: %d, loss: %.4f, accuracy: %.2f' % (
-        epoch, epoch_metrics_np['loss'], epoch_metrics_np['accuracy'] * 100
+    print('train epoch: %d, loss: %.4f, accuracy: %.2f, nfe: %.2f' % (
+        epoch, epoch_metrics_np['loss'], epoch_metrics_np['accuracy'] * 100, epoch_metrics_np['nfe']
     ))
 
     return state
@@ -245,7 +250,7 @@ def train_and_evaluate(learning_rate, n_epoch, batch_size, tol):
     state = create_train_state(init_rng, learning_rate, tol)
     del init_rng  # Must not be used anymore.
 
-    for epoch in tqdm(range(1, n_epoch + 1)):
+    for epoch in range(1, n_epoch + 1):
         rng, input_rng = jax.random.split(rng)
         state = train_epoch(state, train_ds, batch_size, epoch, input_rng, tol)
         test_loss, test_accuracy = eval_model(state.params, test_ds, tol)
@@ -255,4 +260,4 @@ def train_and_evaluate(learning_rate, n_epoch, batch_size, tol):
 
 
 if __name__ == '__main__':
-    train_and_evaluate(0.0001, 3, 128, 1.)
+    train_and_evaluate(0.0001, 10, 128, 0.001)
