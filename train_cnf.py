@@ -20,6 +20,7 @@ from sklearn.datasets import make_circles, make_moons, make_s_curve
 from tqdm import tqdm
 
 
+os.environ['CUDA_VISIBLE_DEVICES'] = '3'
 # os.environ['TF_FORCE_UNIFIED_MEMORY'] = '1'
 # os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 # os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
@@ -181,10 +182,9 @@ def train_step(state, batch, in_out_dim, hidden_dim, width, t0, t1):
     p_z0 = lambda x: scipy.stats.multivariate_normal.logpdf(x,
                                                             mean=jnp.array([0., 0.]),
                                                             cov=jnp.array([[0.1, 0.], [0., 0.1]]))
-    vmap_multi = jax.vmap(multivariate_normal, 0, 0)
     def loss_fn(params):
         func = lambda states, t: Neg_CNF(in_out_dim, hidden_dim, width).apply({'params': params}, t, states)
-        outputs = odeint(
+        outputs, _ = odeint(
             func,
             batch,
             -1.0 * jnp.array([t1, t0]),
