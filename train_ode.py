@@ -2,7 +2,6 @@ from functools import partial
 import jax
 from typing import Any, Callable, Sequence, Optional, NewType
 from jax import lax, random, vmap, numpy as jnp
-#from jax.experimental.ode import odeint
 from models.ode import odeint
 import flax
 from flax.training import train_state
@@ -15,10 +14,6 @@ import tensorflow_datasets as tfds
 import numpy as np
 from tqdm import tqdm
 import os
-
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '3'
-
 
 # Define Residual Block
 class ResDownBlock(nn.Module):
@@ -45,7 +40,7 @@ class ConcatConv2D(nn.Module):
     @nn.compact
     def __call__(self, inputs, t):
         x = inputs
-        tt = jnp.ones_like(x[:, :, :1]) * t
+        tt = jnp.ones_like(x[:, :, :, :1]) * t
         ttx = jnp.concatenate([tt, x], -1)
         return nn.Conv(features=self.dim_out, kernel_size=(self.ksize, self.ksize))(ttx)
 
@@ -58,9 +53,6 @@ class ODEfunc(nn.Module):
 
     @nn.compact
     def __call__(self, inputs, t):
-        # TODO Count number of function estimation
-        # nfe_counter = NFEcounter()
-        # nfe_counter()
 
         x = inputs
         out = nn.GroupNorm(self.dim_out)(x)
@@ -128,8 +120,8 @@ class FullODENet(nn.Module):
 
         ode_func = ODEfunc()
         init_fn = lambda rng, x: ode_func.init(random.split(rng)[-1], x, 0.)['params']
-        ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x[0]))
-        x, nfe = ODEBlockVmap(tol=self.tol)(x, ode_func_params)
+        ode_func_params = self.param('ode_func', init_fn, jnp.ones_like(x))
+        x, nfe = ODEBlock(tol=self.tol)(x, ode_func_params)
 
         x = nn.GroupNorm(self.dim_out)(x)
         x = nn.relu(x)
@@ -190,12 +182,12 @@ def train_step(state, batch, tol):
     def loss_fn(params):
         logits, nfe = FullODENet(tol=tol).apply({'params': params}, batch['image'])
         loss = cross_entropy_loss(logits=logits, labels=batch['label'])
-        return (loss, lax.concatenate((logits, lax.expand_dims(lax.stop_gradient(nfe), (1,))), 1))
-    _, logits = loss_fn(state.params)
-    grad_fn = jax.grad(loss_fn, has_aux=True)
-    grads = grad_fn(state.params)
+        return (loss, (logits, nfe))
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+    (_, logits_nfe), grads = grad_fn(state.params)
+    logits, nfe = logits_nfe
     state = state.apply_gradients(grads=grads)
-    metrics = compute_metrics(logits=logits[:, :-1], labels=batch['label'], nfe=logits[:, -1:].mean())
+    metrics = compute_metrics(logits=logits, labels=batch['label'], nfe=nfe)
     return state, metrics
 
 
@@ -227,7 +219,7 @@ def train_epoch(state, train_ds, batch_size, epoch, rng, tol):
             k: np.mean([metrics[k] for metrics in batch_metrics_np])
             for k in batch_metrics_np[0]
         }
-    print('train epoch: %d, loss: %.4f, accuracy: %.2f, nfe: %.2f' % (
+    print('train epoch: %d, loss: %.4f, accuracy: %.2f, forward nfe: %.2f' % (
         epoch, epoch_metrics_np['loss'], epoch_metrics_np['accuracy'] * 100, epoch_metrics_np['nfe']
     ))
 
@@ -260,4 +252,4 @@ def train_and_evaluate(learning_rate, n_epoch, batch_size, tol):
 
 
 if __name__ == '__main__':
-    train_and_evaluate(0.0001, 10, 128, 0.001)
+    train_and_evaluate(0.0001, 10, 128, 0.1)
